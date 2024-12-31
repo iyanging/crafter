@@ -1,0 +1,27 @@
+name: Deploy gh-pages
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Prepare for site generator
+        run: uv sync
+
+      - name: Build & deploy site
+        run: uv run mkdocs gh-deploy --force
