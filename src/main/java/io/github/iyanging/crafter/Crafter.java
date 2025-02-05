@@ -15,4 +15,60 @@
 
 package io.github.iyanging.crafter;
 
-public class Crafter {}
+import java.util.Set;
+
+import javax.annotation.processing.AbstractProcessor;
+import javax.annotation.processing.RoundEnvironment;
+import javax.lang.model.SourceVersion;
+import javax.lang.model.element.TypeElement;
+import javax.tools.Diagnostic;
+
+
+public class Crafter extends AbstractProcessor {
+
+    private static final String ANNO_BUILDER_CANONICAL_NAME = Builder.class.getCanonicalName();
+
+    @Override
+    public boolean process(
+        Set<? extends TypeElement> annotations,
+        RoundEnvironment roundEnv
+    ) {
+        for (final var annotatedElement : roundEnv.getElementsAnnotatedWith(Builder.class)) {
+
+            final var elementKind = annotatedElement.getKind();
+            switch (elementKind) {
+
+                case CONSTRUCTOR -> generateBuilderForConstructor();
+                case RECORD -> generateBuilderForRecord();
+
+                default -> processingEnv.getMessager()
+                    .printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "@%s cannot be placed on this position %s"
+                            .formatted(ANNO_BUILDER_CANONICAL_NAME, elementKind.name()),
+                        annotatedElement,
+                        Util.getAnnotationMirrorsByClass(annotatedElement, Builder.class)
+                            .findFirst()
+                            .orElseThrow()
+                    );
+            }
+
+        }
+
+        return false;
+    }
+
+    private void generateBuilderForConstructor() {
+
+    }
+
+    private void generateBuilderForRecord() {
+
+    }
+
+    @Override
+    public Set<String> getSupportedAnnotationTypes() { return Set.of(ANNO_BUILDER_CANONICAL_NAME); }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
+}

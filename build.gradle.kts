@@ -19,16 +19,16 @@ plugins {
 
 repositories { mavenCentral() }
 
-group = "io.github.iyanging"
+group = "io.github.iyanging.crafter"
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
 
 dependencies {
     api(libs.jspecify)
 
-    compileOnly(libs.autoServiceAnnotations)
+    implementation(libs.javapoet)
 
-    annotationProcessor(libs.autoService)
+    testImplementation(platform(libs.junitBom))
 
     errorprone(libs.errorProneCore)
     errorprone(libs.nullaway)
@@ -63,6 +63,8 @@ tasks.jacocoTestReport {
 tasks.check { dependsOn(tasks.jacocoTestReport) }
 
 tasks.withType<Test> {
+    useJUnitPlatform()
+
     testLogging {
         events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
 
@@ -75,7 +77,7 @@ mavenPublishing {
 
     pom {
         url = "https://github.com/iyanging/crafter"
-        description = ""
+        description = "Java annotation processor for generating Type-Safe Builder"
         licenses {
             license {
                 name = "Mulan Permissive Software License v2"

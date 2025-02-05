@@ -6,10 +6,13 @@ mavenPublishPlugin = "0.30.0"
 licenserPlugin = "2.1.1"
 ktfmtPlugin = "0.54"
 
-jspecify = "1.0.0"
 errorProne = "2.36.0"
 nullaway = "0.12.3"
-autoService = "1.1.1"
+
+jspecify = "1.0.0"
+javapoet = "0.6.0"
+
+junit = "5.11.4"
 
 [plugins]
 errorProne = { id = "net.ltgt.errorprone", version.ref = "errorPronePlugin" }
@@ -21,8 +24,10 @@ licenser = { id = "dev.yumi.gradle.licenser", version.ref = "licenserPlugin" }
 ktfmt = { id = "com.facebook:ktfmt", version.ref = "ktfmtPlugin" }
 
 [libraries]
-jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 errorProneCore = { module = "com.google.errorprone:error_prone_core", version.ref = "errorProne" }
 nullaway = { module = "com.uber.nullaway:nullaway", version.ref = "nullaway" }
-autoServiceAnnotations = { module = "com.google.auto.service:auto-service-annotations", version.ref = "autoService" }
-autoService = { module = "com.google.auto.service:auto-service", version.ref = "autoService" }
+
+jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
+javapoet = { module = "com.palantir.javapoet:javapoet", version.ref = "javapoet" }
+
+junitBom = { module = "org.junit:junit-bom", version.ref = "junit" }
