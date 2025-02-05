@@ -120,7 +120,7 @@ spotless {
     yaml {
         target("**/*.yaml", "**/*.yml")
         targetExclude("**/.venv/")
-        indentWithSpaces(2)
+        leadingTabsToSpaces(2)
         trimTrailingWhitespace()
         endWithNewline()
     }
