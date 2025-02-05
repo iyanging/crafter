@@ -13,6 +13,7 @@
  * See the Mulan PSL v2 for more details.
  */
 
-package io.github.iyanging;
+@NullMarked
+package io.github.iyanging.crafter;
 
-public class Crafter {}
+import org.jspecify.annotations.NullMarked;
