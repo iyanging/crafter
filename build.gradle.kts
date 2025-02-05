@@ -111,7 +111,7 @@ spotless {
     }
     kotlinGradle {
         target("**/*.gradle.kts")
-        ktfmt("0.50").kotlinlangStyle().configure {
+        ktfmt(libs.plugins.ktfmt.get().version.toString()).kotlinlangStyle().configure {
             it.setBlockIndent(4)
             it.setContinuationIndent(4)
             it.setRemoveUnusedImports(true)

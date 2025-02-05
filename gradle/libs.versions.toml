@@ -4,6 +4,7 @@ nullawayPlugin = "2.2.0"
 spotlessPlugin = "7.0.2"
 mavenPublishPlugin = "0.30.0"
 licenserPlugin = "2.1.1"
+ktfmtPlugin = "0.54"
 
 jspecify = "1.0.0"
 errorProne = "2.36.0"
@@ -16,6 +17,8 @@ nullaway = { id = "net.ltgt.nullaway", version.ref = "nullawayPlugin" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotlessPlugin" }
 mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublishPlugin" }
 licenser = { id = "dev.yumi.gradle.licenser", version.ref = "licenserPlugin" }
+# pretend ktfmt as a gradle plugin to let dependabot work on it
+ktfmt = { id = "com.facebook:ktfmt", version.ref = "ktfmtPlugin" }
 
 [libraries]
 jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
