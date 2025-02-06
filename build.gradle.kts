@@ -1,6 +1,4 @@
-import com.vanniktech.maven.publish.JavaLibrary
-import com.vanniktech.maven.publish.JavadocJar
-import com.vanniktech.maven.publish.SonatypeHost
+import java.net.URI
 import net.ltgt.gradle.errorprone.CheckSeverity
 import net.ltgt.gradle.errorprone.errorprone
 import net.ltgt.gradle.nullaway.nullaway
@@ -10,9 +8,10 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 plugins {
     `java-library`
     jacoco
+    `maven-publish`
+    signing
     alias(libs.plugins.errorProne)
     alias(libs.plugins.nullaway)
-    alias(libs.plugins.mavenPublish)
     alias(libs.plugins.licenser)
     alias(libs.plugins.spotless)
 }
@@ -72,31 +71,55 @@ tasks.withType<Test> {
     }
 }
 
-mavenPublishing {
-    configure(JavaLibrary(javadocJar = JavadocJar.Empty(), sourcesJar = true))
+publishing {
+    publications {
+        create<MavenPublication>("library") {
+            from(components["java"])
 
-    pom {
-        url = "https://github.com/iyanging/crafter"
-        description = "Java annotation processor for generating Type-Safe Builder"
-        licenses {
-            license {
-                name = "Mulan Permissive Software License v2"
-                url = "https://license.coscl.org.cn/MulanPSL2"
+            pom {
+                url = "https://github.com/iyanging/crafter"
+                description = "Java annotation processor for generating Type-Safe Builder"
+                licenses {
+                    license {
+                        name = "Mulan Permissive Software License v2"
+                        url = "https://license.coscl.org.cn/MulanPSL2"
+                    }
+                }
+                developers {
+                    developer {
+                        id = "iyanging"
+                        name = "iyanging"
+                        url = "https://github.com/iyanging/"
+                    }
+                }
+                scm { url = "https://github.com/iyanging/crafter" }
             }
         }
-        developers {
-            developer {
-                id = "iyanging"
-                name = "iyanging"
-                url = "https://github.com/iyanging/"
-            }
-        }
-        scm { url = "https://github.com/iyanging/crafter" }
     }
 
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    repositories {
+        maven {
+            name = "MavenCentral"
+            url = URI.create("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
 
-    signAllPublications()
+            credentials {
+                val mavenCentralUsername: String? by project
+                val mavenCentralPassword: String? by project
+
+                username = mavenCentralUsername
+                password = mavenCentralPassword
+            }
+        }
+    }
+}
+
+signing {
+    val signingInMemoryKey: String? by project
+    val signingInMemoryKeyPassword: String? by project
+
+    useInMemoryPgpKeys(signingInMemoryKey, signingInMemoryKeyPassword)
+
+    sign(publishing.publications)
 }
 
 license { rule(file("$rootDir/configs/license-template.txt")) }
