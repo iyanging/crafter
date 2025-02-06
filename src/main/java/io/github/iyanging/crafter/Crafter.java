@@ -20,6 +20,9 @@ import java.util.Set;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.Element;
+import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
 
@@ -33,24 +36,19 @@ public class Crafter extends AbstractProcessor {
         Set<? extends TypeElement> annotations,
         RoundEnvironment roundEnv
     ) {
-        for (final var annotatedElement : roundEnv.getElementsAnnotatedWith(Builder.class)) {
+        for (final var element : roundEnv.getElementsAnnotatedWith(Builder.class)) {
 
-            final var elementKind = annotatedElement.getKind();
+            final var elementKind = element.getKind();
             switch (elementKind) {
 
-                case CONSTRUCTOR -> generateBuilderForConstructor();
-                case RECORD -> generateBuilderForRecord();
+                case CLASS, RECORD -> generateBuilderForClass((TypeElement) element);
+                case CONSTRUCTOR -> generateBuilderForConstructor((ExecutableElement) element);
 
-                default -> processingEnv.getMessager()
-                    .printMessage(
-                        Diagnostic.Kind.ERROR,
-                        "@%s cannot be placed on this position %s"
-                            .formatted(ANNO_BUILDER_CANONICAL_NAME, elementKind.name()),
-                        annotatedElement,
-                        Util.getAnnotationMirrorsByClass(annotatedElement, Builder.class)
-                            .findFirst()
-                            .orElseThrow()
-                    );
+                default -> printError(
+                    element,
+                    "@%s cannot be placed on this position %s"
+                        .formatted(ANNO_BUILDER_CANONICAL_NAME, elementKind.name())
+                );
             }
 
         }
@@ -58,12 +56,48 @@ public class Crafter extends AbstractProcessor {
         return false;
     }
 
-    private void generateBuilderForConstructor() {
+    private void generateBuilderForClass(TypeElement clazz) {
+        final var usableCtorList = clazz.getEnclosedElements()
+            .stream()
+            .filter(e -> e.getKind() == ElementKind.CONSTRUCTOR)
+            .map(ctor -> (ExecutableElement) ctor)
+            .filter(ctor -> ! ctor.getParameters().isEmpty())
+            .toList();
+
+        if (usableCtorList.isEmpty()) {
+            printError(
+                clazz,
+                "Class/Record has no constructor that takes arguments to use to generate the Builder"
+            );
+            return;
+
+        } else if (usableCtorList.size() > 1) {
+            printError(
+                clazz,
+                "%s does not know which constructor to use to generate the Builder"
+                    .formatted(getClass().getName())
+            );
+            return;
+        }
+
+        final var ctor = usableCtorList.get(0);
+        generateBuilderForConstructor(ctor);
+    }
+
+    private void generateBuilderForConstructor(ExecutableElement constructor) {
 
     }
 
-    private void generateBuilderForRecord() {
-
+    private void printError(Element element, String message) {
+        processingEnv.getMessager()
+            .printMessage(
+                Diagnostic.Kind.ERROR,
+                message,
+                element,
+                Util.getAnnotationMirrorsByClass(element, Builder.class)
+                    .findFirst()
+                    .orElseThrow()
+            );
     }
 
     @Override

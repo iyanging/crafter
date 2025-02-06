@@ -21,7 +21,7 @@ import java.lang.annotation.*;
 @Documented
 @Target(
     {
-        ElementType.RECORD_COMPONENT,
+        ElementType.TYPE,
         ElementType.CONSTRUCTOR
     }
 )

@@ -12,6 +12,7 @@ jspecify = "1.0.0"
 javapoet = "0.6.0"
 
 junit = "5.11.4"
+elementary = "3.0.0"
 
 [plugins]
 errorProne = { id = "net.ltgt.errorprone", version.ref = "errorPronePlugin" }
@@ -29,3 +30,6 @@ jspecify = { module = "org.jspecify:jspecify", version.ref = "jspecify" }
 javapoet = { module = "com.palantir.javapoet:javapoet", version.ref = "javapoet" }
 
 junitBom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junitJupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junitPlatformLauncher = { module = "org.junit.platform:junit-platform-launcher" }
+elementary = { module = "com.karuslabs:elementary", version.ref = "elementary" }

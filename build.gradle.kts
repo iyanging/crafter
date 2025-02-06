@@ -20,7 +20,12 @@ repositories { mavenCentral() }
 
 group = "io.github.iyanging.crafter"
 
-java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(17) }
+
+    withSourcesJar()
+    withJavadocJar()
+}
 
 dependencies {
     api(libs.jspecify)
@@ -28,12 +33,35 @@ dependencies {
     implementation(libs.javapoet)
 
     testImplementation(platform(libs.junitBom))
+    testImplementation(libs.junitJupiter)
+    testImplementation(libs.elementary)
+
+    testRuntimeOnly(libs.junitPlatformLauncher)
+
+    testAnnotationProcessor(project)
 
     errorprone(libs.errorProneCore)
     errorprone(libs.nullaway)
 }
 
+val javacExports =
+    listOf(
+        //        "--add-exports=java.base/jdk.internal.javac=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED"
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+        //        "--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
+    )
+
 tasks.withType<JavaCompile> {
+    options.compilerArgs.addAll(javacExports)
+
     options.errorprone {
         disableWarningsInGeneratedCode = true
         errorproneArgs = listOf("-XepAllSuggestionsAsWarnings")
@@ -50,6 +78,16 @@ tasks.withType<JavaCompile> {
     }
 }
 
+tasks.test {
+    useJUnitPlatform()
+
+    testLogging {
+        events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
+
+        exceptionFormat = TestExceptionFormat.FULL
+    }
+}
+
 tasks.jacocoTestReport {
     dependsOn(tasks.test)
 
@@ -60,16 +98,6 @@ tasks.jacocoTestReport {
 }
 
 tasks.check { dependsOn(tasks.jacocoTestReport) }
-
-tasks.withType<Test> {
-    useJUnitPlatform()
-
-    testLogging {
-        events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
-
-        exceptionFormat = TestExceptionFormat.FULL
-    }
-}
 
 publishing {
     publications {
