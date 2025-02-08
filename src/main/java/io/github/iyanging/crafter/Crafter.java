@@ -15,16 +15,18 @@
 
 package io.github.iyanging.crafter;
 
-import java.util.Set;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.*;
 
 import javax.annotation.processing.AbstractProcessor;
+import javax.annotation.processing.Generated;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.*;
 import javax.tools.Diagnostic;
+
+import com.palantir.javapoet.*;
 
 
 public class Crafter extends AbstractProcessor {
@@ -42,7 +44,11 @@ public class Crafter extends AbstractProcessor {
             switch (elementKind) {
 
                 case CLASS, RECORD -> generateBuilderForClass((TypeElement) element);
-                case CONSTRUCTOR -> generateBuilderForConstructor((ExecutableElement) element);
+
+                case CONSTRUCTOR -> generateBuilderForCreator(
+                    (ExecutableElement) element,
+                    makeBuilderClassName(element)
+                );
 
                 default -> printError(
                     element,
@@ -67,25 +73,131 @@ public class Crafter extends AbstractProcessor {
         if (usableCtorList.isEmpty()) {
             printError(
                 clazz,
-                "Class/Record has no constructor that takes arguments to use to generate the Builder"
+                "Class/Record has no parameterized constructor to be used to generate the Builder"
             );
             return;
 
         } else if (usableCtorList.size() > 1) {
             printError(
                 clazz,
-                "%s does not know which constructor to use to generate the Builder"
+                "%s does not know which constructor to be used to generate the Builder"
                     .formatted(getClass().getName())
             );
             return;
         }
 
         final var ctor = usableCtorList.get(0);
-        generateBuilderForConstructor(ctor);
+
+        generateBuilderForCreator(
+            ctor,
+            makeBuilderClassName(clazz)
+        );
     }
 
-    private void generateBuilderForConstructor(ExecutableElement constructor) {
+    private void generateBuilderForCreator(
+        ExecutableElement creator,
+        String builderClassName
+    ) {
+        // initialize builder class
+        final var builderClass = TypeSpec.classBuilder(builderClassName)
+            .addAnnotation(makeGenerated())
+            .addModifiers(calcModifiers(creator))
+            .addTypeVariables(extractTypeVariables(creator));
 
+        // reversely make stages interfaces
+        final var reversedStageInterfaceList = new ArrayList<TypeSpec>();
+
+        reversedStageInterfaceList.add(makeStageFinalBuild(creator));
+
+        // forwardly add stages interfaces
+
+        final var builderFile = JavaFile.builder(
+            processingEnv.getElementUtils()
+                .getPackageOf(creator)
+                .getQualifiedName()
+                .toString(),
+            builderClass.build()
+        ).build();
+
+        try {
+            builderFile.writeTo(processingEnv.getFiler());
+
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+    }
+
+    private TypeSpec makeStageFinalBuild(ExecutableElement creator) {
+        return TypeSpec.interfaceBuilder("FinalBuild")
+            .addModifiers(Modifier.PUBLIC)
+            .addMethod(
+                MethodSpec.methodBuilder("build")
+                    .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+                    .returns(TypeName.get(switch (creator.getKind()) {
+
+                        case CONSTRUCTOR -> Objects
+                            .requireNonNull(creator.getEnclosingElement())
+                            .asType();
+                        case METHOD -> creator.getReturnType();
+
+                        default -> throw new IllegalStateException(
+                            "creator should be CONSTRUCTOR or static METHOD"
+                        );
+                    }))
+                    .build()
+            )
+            .build();
+    }
+
+    private Modifier[] calcModifiers(ExecutableElement creator) {
+        return new Modifier[] {
+            Optional.ofNullable(
+                processingEnv.getElementUtils()
+                    .getPackageOf(creator)
+                    .getModifiers()
+            )
+                .stream()
+                .flatMap(Set::stream)
+                .filter(
+                    modifier -> modifier == Modifier.PUBLIC
+                        || modifier == Modifier.PROTECTED
+                        || modifier == Modifier.PRIVATE
+                        || modifier == Modifier.DEFAULT
+                )
+                .findFirst()
+                .orElse(Modifier.DEFAULT) };
+    }
+
+    private List<TypeVariableName> extractTypeVariables(ExecutableElement creator) {
+        return creator.getTypeParameters()
+            .stream()
+            .map(TypeVariableName::get)
+            .toList();
+    }
+
+    private AnnotationSpec makeGenerated() {
+        return AnnotationSpec.builder(Generated.class)
+            .addMember("value", "$S", getClass().getName())
+            .build();
+    }
+
+    private String makeBuilderClassName(Element element) {
+        final var baseName = switch (element.getKind()) {
+            case CLASS, RECORD -> element
+                .getSimpleName()
+                .toString();
+
+            case CONSTRUCTOR -> Objects.requireNonNull(element.getEnclosingElement())
+                .getSimpleName()
+                .toString();
+
+            default -> throw new IllegalArgumentException(
+                "Unsupported element kind: " + element.getKind()
+            );
+        };
+
+        return baseName + "_";
     }
 
     private void printError(Element element, String message) {
@@ -96,7 +208,7 @@ public class Crafter extends AbstractProcessor {
                 element,
                 Util.getAnnotationMirrorsByClass(element, Builder.class)
                     .findFirst()
-                    .orElseThrow()
+                    .orElse(null)
             );
     }
 
