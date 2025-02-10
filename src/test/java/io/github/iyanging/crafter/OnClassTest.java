@@ -1,5 +1,6 @@
 package io.github.iyanging.crafter;
 
+import static io.github.iyanging.crafter.util.CodeStructureAssertion.assertStructureEquals;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.karuslabs.elementary.Results;
@@ -97,7 +98,17 @@ public class OnClassTest {
         """
     )
     public void generate_from_single_parameterized_ctor(Results results) {
-        // TODO
-        return;
+        assertStructureEquals(
+            """
+                        @Builder
+                        public class Entity {}
+                        """,
+            """
+                        import hello.Builder;
+                        
+                        @Builder
+                        public class Entity {}
+                        """
+        );
     }
 }

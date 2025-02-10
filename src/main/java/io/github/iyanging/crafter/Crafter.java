@@ -18,20 +18,30 @@ package io.github.iyanging.crafter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.*;
+import java.util.stream.Stream;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Generated;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
+import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 
 import com.palantir.javapoet.*;
+import org.jspecify.annotations.Nullable;
 
 
 public class Crafter extends AbstractProcessor {
+    public static final String TOOL_NAME = "Crafter";
 
     private static final String ANNO_BUILDER_CANONICAL_NAME = Builder.class.getCanonicalName();
+
+    @Override
+    public Set<String> getSupportedAnnotationTypes() { return Set.of(ANNO_BUILDER_CANONICAL_NAME); }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
 
     @Override
     public boolean process(
@@ -47,7 +57,7 @@ public class Crafter extends AbstractProcessor {
 
                 case CONSTRUCTOR -> generateBuilderForCreator(
                     (ExecutableElement) element,
-                    makeBuilderClassName(element)
+                    makeBuilderContainerName(element)
                 );
 
                 default -> printError(
@@ -90,33 +100,79 @@ public class Crafter extends AbstractProcessor {
 
         generateBuilderForCreator(
             ctor,
-            makeBuilderClassName(clazz)
+            makeBuilderContainerName(clazz)
         );
     }
 
     private void generateBuilderForCreator(
         ExecutableElement creator,
-        String builderClassName
+        String builderContainerName
     ) {
-        // initialize builder class
-        final var builderClass = TypeSpec.classBuilder(builderClassName)
+        final var creatorTypeParameterList = creator.getTypeParameters();
+
+        // initialize builder container class
+        final var builderContainer = TypeSpec.classBuilder(builderContainerName)
             .addAnnotation(makeGenerated())
-            .addModifiers(calcModifiers(creator))
-            .addTypeVariables(extractTypeVariables(creator));
+            .addModifiers(calcModifiers(creator));
 
         // reversely make stages interfaces
-        final var reversedStageInterfaceList = new ArrayList<TypeSpec>();
+        final var stageInterfaceList = new ArrayList<TypeSpec>();
 
-        reversedStageInterfaceList.add(makeStageFinalBuild(creator));
+        final var creatorParameterList = creator.getParameters();
 
-        // forwardly add stages interfaces
+        final var finalStage = makeStageInterface(
+            "FinalStage",
+            creatorTypeParameterList,
+            "build",
+            null,
+            (ClassName) TypeName.get(extractTargetClass(creator))
+        );
+        stageInterfaceList.add(finalStage);
+
+        var nextStage = finalStage;
+        for (var i = creatorParameterList.size() - 1; i >= 0; i--) {
+            final var creatorParameter = creatorParameterList.get(i);
+
+            final var methodName = creatorParameter.getSimpleName().toString();
+            final var stageName = i != 0 ? methodName : "FirstStage";
+
+            final var stage = makeStageInterface(
+                stageName,
+                creatorTypeParameterList,
+                creatorParameter.getSimpleName().toString(),
+                creatorParameter,
+                nextStage
+            );
+
+            stageInterfaceList.add(stage);
+            nextStage = stage;
+        }
+
+        Collections.reverse(stageInterfaceList);
+
+        // add stages interfaces
+        builderContainer.addTypes(stageInterfaceList);
+
+        // make builder class
+        final var builderClass = makeBuilderClass(
+            stageInterfaceList,
+            finalStage,
+            creator
+        );
+
+        builderContainer.addType(builderClass);
+
+        // make `builder()` method
+        final var builderMethod = makeBuilderMethod(builderClass);
+
+        builderContainer.addMethod(builderMethod);
 
         final var builderFile = JavaFile.builder(
             processingEnv.getElementUtils()
                 .getPackageOf(creator)
                 .getQualifiedName()
                 .toString(),
-            builderClass.build()
+            builderContainer.build()
         ).build();
 
         try {
@@ -128,61 +184,216 @@ public class Crafter extends AbstractProcessor {
 
     }
 
-    private TypeSpec makeStageFinalBuild(ExecutableElement creator) {
-        return TypeSpec.interfaceBuilder("FinalBuild")
+    private TypeSpec makeStageInterface(
+        String interfaceName,
+        List<? extends TypeParameterElement> typeParameter,
+        String methodName,
+        @Nullable VariableElement parameter,
+        TypeSpec nextStage
+    ) {
+        return makeStageInterface(
+            interfaceName,
+            typeParameter,
+            methodName,
+            parameter,
+            extractClassName(nextStage)
+        );
+    }
+
+    private TypeSpec makeStageInterface(
+        String interfaceName,
+        List<? extends TypeParameterElement> typeParameterList,
+        String methodName,
+        @Nullable VariableElement parameter,
+        ClassName nextStage
+    ) {
+        final var typeParameterNameList = typeParameterList.stream()
+            .map(TypeVariableName::get)
+            .toList();
+
+        final var stageInterface = TypeSpec.interfaceBuilder(interfaceName)
             .addModifiers(Modifier.PUBLIC)
-            .addMethod(
-                MethodSpec.methodBuilder("build")
-                    .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
-                    .returns(TypeName.get(switch (creator.getKind()) {
+            .addTypeVariables(typeParameterNameList);
 
-                        case CONSTRUCTOR -> Objects
-                            .requireNonNull(creator.getEnclosingElement())
-                            .asType();
-                        case METHOD -> creator.getReturnType();
+        final var nextStageTypeName = typeParameterList.isEmpty()
+            ? nextStage
+            : ParameterizedTypeName
+                .get(
+                    nextStage,
+                    // all stages share the same ordered type parameters
+                    typeParameterNameList.toArray(new TypeVariableName[0])
+                );
 
-                        default -> throw new IllegalStateException(
-                            "creator should be CONSTRUCTOR or static METHOD"
-                        );
-                    }))
-                    .build()
+        final var stageMethod = MethodSpec.methodBuilder(methodName)
+            .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+            .addParameters(
+                Optional.ofNullable(parameter)
+                    .map(ParameterSpec::get)
+                    .stream()
+                    .toList()
             )
+            .returns(nextStageTypeName);
+
+        return stageInterface
+            .addMethod(stageMethod.build())
             .build();
+    }
+
+    private TypeSpec makeBuilderClass(
+        List<TypeSpec> stageInterfaceList,
+        TypeSpec finalStage,
+        ExecutableElement creator
+    ) {
+        final var builderClass = TypeSpec.classBuilder("Builder")
+            .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+            .addSuperinterfaces(
+                stageInterfaceList.stream()
+                    .map(this::extractClassName)
+                    .toList()
+            );
+
+        builderClass.addFields(
+            stageInterfaceList.stream()
+                .filter(s -> {
+                    @SuppressWarnings("ReferenceEquality")
+                    final var isFinalStage = s != finalStage;
+                    return isFinalStage;
+                })
+                .map(s -> onlyOne(s.methodSpecs()))
+                .map(m -> onlyOne(m.parameters()))
+                .map(
+                    p -> FieldSpec.builder(
+                        p.type(),
+                        p.name(),
+                        Modifier.PRIVATE
+                    )
+                        .addAnnotations(p.annotations())
+                        .build()
+                )
+                .toList()
+        );
+
+        builderClass.addMethods(
+            stageInterfaceList.stream()
+                .filter(s -> {
+                    @SuppressWarnings("ReferenceEquality")
+                    final var isFinalStage = s != finalStage;
+                    return isFinalStage;
+                })
+                .map(s -> onlyOne(s.methodSpecs()))
+                .map(
+                    m -> MethodSpec.methodBuilder(m.name())
+                        .addAnnotation(Override.class)
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(m.returnType())
+                        .addParameters(m.parameters())
+                        .addStatement("this.$1L = $1L", onlyOne(m.parameters()).name())
+                        .addStatement("return this")
+                        .build()
+                )
+                .toList()
+        );
+
+        final var creatorInvocationLiteral = String.join(
+            ", ",
+            creator.getParameters()
+                .stream()
+                .map(p -> p.getSimpleName().toString())
+                .toList()
+        );
+
+        builderClass.addMethods(
+            Stream.of(onlyOne(finalStage.methodSpecs()))
+                .map(
+                    buildMethod -> MethodSpec.methodBuilder(buildMethod.name())
+                        .addAnnotation(Override.class)
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(buildMethod.returnType())
+                        .addStatement(
+                            switch (creator.getKind()) {
+                                case CONSTRUCTOR -> CodeBlock.builder()
+                                    .add(
+                                        "return new $T($L)",
+                                        extractTargetClass(creator),
+                                        creatorInvocationLiteral
+                                    )
+                                    .build();
+
+                                case METHOD -> CodeBlock.builder()
+                                    .add(
+                                        "return $T.$L($L)",
+                                        // using ClassName gets rid of any type parameters
+                                        // the class might have
+                                        ClassName.get((TypeElement) creator.getEnclosingElement()),
+                                        creator.getSimpleName(),
+                                        creatorInvocationLiteral
+                                    )
+                                    .build();
+
+                                default -> throw new IllegalStateException();
+                            }
+                        )
+                        .build()
+                )
+                .toList()
+        );
+
+        return builderClass.build();
+    }
+
+    private MethodSpec makeBuilderMethod(TypeSpec builderClass) {
+        final var builderClassName = extractClassName(builderClass);
+
+        return MethodSpec.methodBuilder("builder")
+            .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+            .returns(builderClassName)
+            .addStatement("return new $T()", builderClassName)
+            .build();
+    }
+
+    private ClassName extractClassName(TypeSpec type) {
+        return ClassName.get(
+            "", // directly access
+            type.name()
+        );
+    }
+
+    private TypeMirror extractTargetClass(ExecutableElement creator) {
+        return switch (creator.getKind()) {
+            case CONSTRUCTOR -> Objects
+                .requireNonNull(creator.getEnclosingElement())
+                .asType();
+
+            case METHOD -> creator.getReturnType();
+
+            default -> throw new IllegalStateException(
+                "creator should be CONSTRUCTOR or static METHOD"
+            );
+        };
     }
 
     private Modifier[] calcModifiers(ExecutableElement creator) {
         return new Modifier[] {
-            Optional.ofNullable(
-                processingEnv.getElementUtils()
-                    .getPackageOf(creator)
-                    .getModifiers()
-            )
+            processingEnv.getTypeUtils()
+                .asElement(extractTargetClass(creator))
+                .getModifiers()
                 .stream()
-                .flatMap(Set::stream)
                 .filter(
                     modifier -> modifier == Modifier.PUBLIC
                         || modifier == Modifier.PROTECTED
                         || modifier == Modifier.PRIVATE
-                        || modifier == Modifier.DEFAULT
                 )
                 .findFirst()
                 .orElse(Modifier.DEFAULT) };
     }
 
-    private List<TypeVariableName> extractTypeVariables(ExecutableElement creator) {
-        return creator.getTypeParameters()
-            .stream()
-            .map(TypeVariableName::get)
-            .toList();
-    }
-
     private AnnotationSpec makeGenerated() {
         return AnnotationSpec.builder(Generated.class)
-            .addMember("value", "$S", getClass().getName())
+            .addMember("value", "$S", TOOL_NAME)
             .build();
     }
 
-    private String makeBuilderClassName(Element element) {
+    private String makeBuilderContainerName(Element element) {
         final var baseName = switch (element.getKind()) {
             case CLASS, RECORD -> element
                 .getSimpleName()
@@ -197,7 +408,7 @@ public class Crafter extends AbstractProcessor {
             );
         };
 
-        return baseName + "_";
+        return baseName + "Builder";
     }
 
     private void printError(Element element, String message) {
@@ -212,9 +423,13 @@ public class Crafter extends AbstractProcessor {
             );
     }
 
-    @Override
-    public Set<String> getSupportedAnnotationTypes() { return Set.of(ANNO_BUILDER_CANONICAL_NAME); }
+    private static <T> T onlyOne(List<T> list) {
+        if (list.size() != 1) {
+            throw new IllegalArgumentException(
+                "This list must contain exactly one element"
+            );
+        }
 
-    @Override
-    public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
+        return list.get(0);
+    }
 }

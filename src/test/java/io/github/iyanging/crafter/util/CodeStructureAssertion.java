@@ -3,6 +3,12 @@ package io.github.iyanging.crafter.util;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+
+import javax.tools.JavaFileObject;
+
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -15,6 +21,21 @@ import com.github.javaparser.ast.visitor.EqualsVisitor;
  * Reference: {@link EqualsVisitor}
  */
 public class CodeStructureAssertion {
+
+    public static void assertStructureEquals(String expected, JavaFileObject actual) {
+        final String actualCode;
+        try (var actualInputStream = actual.openInputStream()) {
+            actualCode = new String(
+                actualInputStream.readAllBytes(),
+                StandardCharsets.UTF_8
+            );
+
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        assertStructureEquals(expected, actualCode);
+    }
 
     public static void assertStructureEquals(String expected, String actual) {
         final var expectedCu = parse("expected-code", expected);
@@ -30,7 +51,7 @@ public class CodeStructureAssertion {
         final var expectedTypes = expectedCu.getTypes();
         final var actualTypes = actualCu.getTypes();
 
-        assertEquals(
+        assertArrayEquals(
             expectedTypes.stream().map(TypeDeclaration::getNameAsString).toArray(),
             actualTypes.stream().map(TypeDeclaration::getNameAsString).toArray(),
             "Types existence mismatch"
@@ -50,6 +71,12 @@ public class CodeStructureAssertion {
         ClassOrInterfaceDeclaration actualType
     ) {
         final var expectedTypeName = expectedType.getNameAsString();
+
+        assertEquals(
+            expectedType.isInterface(),
+            actualType.isInterface(),
+            "Type kind of %s mismatch".formatted(expectedTypeName)
+        );
 
         assertEquals(
             expectedType.getName(),
@@ -94,15 +121,47 @@ public class CodeStructureAssertion {
         );
 
         assertArrayEquals(
+            expectedType.getConstructors().toArray(),
+            actualType.getConstructors().toArray(),
+            "Type constructor of %s mismatch".formatted(expectedTypeName)
+        );
+
+        assertArrayEquals(
             expectedType.getFields().toArray(),
             actualType.getFields().toArray(),
             "Type permits of %s mismatch".formatted(expectedTypeName)
         );
 
+        final var expectedInnerTypes = expectedType
+            .getMembers()
+            .stream()
+            .filter(m -> m instanceof TypeDeclaration<?>)
+            .map(TypeDeclaration.class::cast)
+            .toList();
+        final var actualInnerTypes = actualType
+            .getMembers()
+            .stream()
+            .filter(m -> m instanceof TypeDeclaration<?>)
+            .map(TypeDeclaration.class::cast)
+            .toList();
+
+        assertArrayEquals(
+            expectedInnerTypes.stream().map(TypeDeclaration::getNameAsString).toArray(),
+            actualInnerTypes.stream().map(TypeDeclaration::getNameAsString).toArray(),
+            "InnerType existence of %s mismatch".formatted(expectedTypeName)
+        );
+
+        for (var i = 0; i < expectedInnerTypes.size(); i++) {
+            final var expectedInnerType = (ClassOrInterfaceDeclaration) expectedInnerTypes.get(i);
+            final var actualInnerType = (ClassOrInterfaceDeclaration) actualInnerTypes.get(i);
+
+            assertTypeEquals(expectedInnerType, actualInnerType);
+        }
+
         final var expectedMethods = expectedType.getMethods();
         final var actualMethods = actualType.getMethods();
 
-        assertEquals(
+        assertArrayEquals(
             expectedMethods.stream().map(MethodDeclaration::getNameAsString).toArray(),
             actualMethods.stream().map(MethodDeclaration::getNameAsString).toArray(),
             "Method existence of %s mismatch".formatted(expectedTypeName)

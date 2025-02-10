@@ -1,5 +1,6 @@
 package io.github.iyanging.crafter;
 
+import static io.github.iyanging.crafter.util.CodeStructureAssertion.assertStructureEquals;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -60,8 +61,54 @@ public class OnCtorTest {
         """
     )
     public void generate_from_record_compact_ctor(Results results) {
-        // TODO
-        return;
+        assertEquals(1, results.generatedSources.size());
+
+        assertStructureEquals(
+            """
+            
+            @Generated("Crafter")
+            public class EntityBuilder {
+                public interface FinalStage {
+                    Entity build();
+                }
+            
+                public interface b {
+                    FinalStage b(Integer b);
+                }
+            
+                public interface FirstStage {
+                    b a(String a);
+                }
+            
+                public static class Builder implements FinalStage, b, FirstStage {
+                    private String a;
+                    private Integer b;
+
+                    private Builder() {}
+
+                    public b a(String a) {
+                        this.a = a;
+                        return this;
+                    }
+
+                    public b a(Integer b) {
+                        this.b = b;
+                        return this;
+                    }
+
+                    public Entity build() {
+                        return new Entity(a, b);
+                    }
+                }
+
+                public static Builder builder() {
+                    return new Builder();
+                }
+            }
+            
+            """,
+            results.generatedSources.get(0)
+        );
     }
 
     @Test
@@ -84,7 +131,6 @@ public class OnCtorTest {
     )
     public void generate_from_record_custom_ctor(Results results) {
         // TODO
-        assertEquals()
         assertThat(results.generatedSources).hasSize(1);
     }
 }
