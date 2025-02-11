@@ -61,6 +61,7 @@ tasks.withType<JavaCompile> {
         nullaway {
             error()
             annotatedPackages.add(project.group.toString())
+            excludedClassAnnotations.addAll("javax.annotation.processing.Generated")
         }
     }
 }

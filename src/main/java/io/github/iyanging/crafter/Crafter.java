@@ -108,24 +108,47 @@ public class Crafter extends AbstractProcessor {
         ExecutableElement creator,
         String builderContainerName
     ) {
-        final var creatorTypeParameterList = creator.getTypeParameters();
+        final var creatorTypeParameterList = calcTypeParameters(creator);
 
         // initialize builder container class
         final var builderContainer = TypeSpec.classBuilder(builderContainerName)
             .addAnnotation(makeGenerated())
-            .addModifiers(calcModifiers(creator));
+            .addModifiers(calcModifiers(creator))
+            .addMethod(
+                // make constructor private to prevent instantiation of container
+                MethodSpec.constructorBuilder()
+                    .addModifiers(Modifier.PRIVATE)
+                    .build()
+            );
 
         // reversely make stages interfaces
         final var stageInterfaceList = new ArrayList<TypeSpec>();
 
         final var creatorParameterList = creator.getParameters();
+        final var creatorTargetClass = extractTargetClass(creator);
+        final var creatorTargetClassName = extractClassName(creatorTargetClass);
+
+        if (creatorTargetClassName == null) {
+            printError(
+                creator,
+                "@%s cannot build %s".formatted(
+                    ANNO_BUILDER_CANONICAL_NAME,
+                    Stream.of(creatorTargetClass.getClass().getSimpleName())
+                        // remove postfix "Name"
+                        .map(n -> n.substring(0, n.length() - 4))
+                        .findFirst()
+                        .orElseThrow()
+                )
+            );
+            return;
+        }
 
         final var finalStage = makeStageInterface(
             "FinalStage",
             creatorTypeParameterList,
             "build",
             null,
-            (ClassName) TypeName.get(extractTargetClass(creator))
+            creatorTargetClassName
         );
         stageInterfaceList.add(finalStage);
 
@@ -134,7 +157,11 @@ public class Crafter extends AbstractProcessor {
             final var creatorParameter = creatorParameterList.get(i);
 
             final var methodName = creatorParameter.getSimpleName().toString();
-            final var stageName = i != 0 ? methodName : "FirstStage";
+            final var stageName = i != 0
+                // add some chars to stage name
+                // to avoid conflict with "FirstStage" / "FinalStage"
+                ? makeUpperCamelCase(methodName) + "_"
+                : "FirstStage";
 
             final var stage = makeStageInterface(
                 stageName,
@@ -148,7 +175,7 @@ public class Crafter extends AbstractProcessor {
             nextStage = stage;
         }
 
-        Collections.reverse(stageInterfaceList);
+        Collections.reverse(stageInterfaceList); // reverse the reversed list
 
         // add stages interfaces
         builderContainer.addTypes(stageInterfaceList);
@@ -186,7 +213,7 @@ public class Crafter extends AbstractProcessor {
 
     private TypeSpec makeStageInterface(
         String interfaceName,
-        List<? extends TypeParameterElement> typeParameter,
+        List<TypeParameterElement> typeParameter,
         String methodName,
         @Nullable VariableElement parameter,
         TypeSpec nextStage
@@ -202,7 +229,7 @@ public class Crafter extends AbstractProcessor {
 
     private TypeSpec makeStageInterface(
         String interfaceName,
-        List<? extends TypeParameterElement> typeParameterList,
+        List<TypeParameterElement> typeParameterList,
         String methodName,
         @Nullable VariableElement parameter,
         ClassName nextStage
@@ -244,11 +271,29 @@ public class Crafter extends AbstractProcessor {
         TypeSpec finalStage,
         ExecutableElement creator
     ) {
+        final var creatorTypeParameterList = calcTypeParameters(creator).stream()
+            .map(TypeVariableName::get)
+            .toList();
+
         final var builderClass = TypeSpec.classBuilder("Builder")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
+            .addTypeVariables(creatorTypeParameterList)
             .addSuperinterfaces(
                 stageInterfaceList.stream()
-                    .map(this::extractClassName)
+                    .map(stageInterface -> {
+                        final var stageClassName = extractClassName(stageInterface);
+
+                        if (creatorTypeParameterList.isEmpty()) {
+                            return stageClassName;
+
+                        } else {
+                            return ParameterizedTypeName.get(
+                                stageClassName,
+                                creatorTypeParameterList.toArray(new TypeVariableName[0])
+                            );
+                        }
+
+                    })
                     .toList()
             );
 
@@ -265,7 +310,7 @@ public class Crafter extends AbstractProcessor {
                     p -> FieldSpec.builder(
                         p.type(),
                         p.name(),
-                        Modifier.PRIVATE
+                        Modifier.PROTECTED
                     )
                         .addAnnotations(p.annotations())
                         .build()
@@ -343,19 +388,19 @@ public class Crafter extends AbstractProcessor {
 
     private MethodSpec makeBuilderMethod(TypeSpec builderClass) {
         final var builderClassName = extractClassName(builderClass);
+        final var builderTypeParameterList = builderClass.typeVariables();
 
         return MethodSpec.methodBuilder("builder")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-            .returns(builderClassName)
+            .addTypeVariables(builderTypeParameterList)
+            .returns(
+                ParameterizedTypeName.get(
+                    builderClassName,
+                    builderTypeParameterList.toArray(new TypeVariableName[0])
+                )
+            )
             .addStatement("return new $T()", builderClassName)
             .build();
-    }
-
-    private ClassName extractClassName(TypeSpec type) {
-        return ClassName.get(
-            "", // directly access
-            type.name()
-        );
     }
 
     private TypeMirror extractTargetClass(ExecutableElement creator) {
@@ -372,6 +417,29 @@ public class Crafter extends AbstractProcessor {
         };
     }
 
+    private ClassName extractClassName(TypeSpec type) {
+        return ClassName.get(
+            "", // directly access
+            type.name()
+        );
+    }
+
+    private @Nullable ClassName extractClassName(TypeMirror typeMirror) {
+        final var typeName = TypeName.get(typeMirror);
+
+        if (typeName instanceof ClassName cn) {
+            return cn;
+
+        } else if (typeName instanceof ParameterizedTypeName ptn) {
+            // remove type parameters
+            return ptn.rawType();
+
+        } else {
+            return null;
+        }
+
+    }
+
     private Modifier[] calcModifiers(ExecutableElement creator) {
         return new Modifier[] {
             processingEnv.getTypeUtils()
@@ -385,6 +453,18 @@ public class Crafter extends AbstractProcessor {
                 )
                 .findFirst()
                 .orElse(Modifier.DEFAULT) };
+    }
+
+    private List<TypeParameterElement> calcTypeParameters(ExecutableElement creator) {
+        final var targetClassElement = (TypeElement) processingEnv.getTypeUtils()
+            .asElement(extractTargetClass(creator));
+
+        final var targetClassTypeParameterList = targetClassElement.getTypeParameters();
+
+        return Stream.concat(
+            targetClassTypeParameterList.stream(),
+            creator.getTypeParameters().stream()
+        ).toList();
     }
 
     private AnnotationSpec makeGenerated() {
@@ -417,9 +497,7 @@ public class Crafter extends AbstractProcessor {
                 Diagnostic.Kind.ERROR,
                 message,
                 element,
-                Util.getAnnotationMirrorsByClass(element, Builder.class)
-                    .findFirst()
-                    .orElse(null)
+                null
             );
     }
 
@@ -431,5 +509,10 @@ public class Crafter extends AbstractProcessor {
         }
 
         return list.get(0);
+    }
+
+    private static String makeUpperCamelCase(String lowerCamelCase) {
+        return lowerCamelCase.substring(0, 1).toUpperCase(Locale.ENGLISH)
+            + lowerCamelCase.substring(1);
     }
 }
