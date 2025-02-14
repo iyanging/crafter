@@ -25,7 +25,7 @@ import javax.annotation.processing.Generated;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
-import javax.lang.model.type.TypeMirror;
+import javax.lang.model.type.*;
 import javax.tools.Diagnostic;
 
 import com.palantir.javapoet.*;
@@ -248,14 +248,34 @@ public class Crafter extends AbstractProcessor {
                 .get(
                     nextStage,
                     // all stages share the same ordered type parameters
-                    typeParameterNameList.toArray(new TypeVariableName[0])
+                    typeParameterNameList.toArray(TypeVariableName[]::new)
                 );
 
         final var stageMethod = MethodSpec.methodBuilder(methodName)
             .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
             .addParameters(
                 Optional.ofNullable(parameter)
-                    .map(ParameterSpec::get)
+                    .map(
+                        p -> ParameterSpec.builder(
+                            TypeName.get(p.asType())
+                                .annotated(
+                                    p.asType()
+                                        .getAnnotationMirrors()
+                                        .stream()
+                                        .map(AnnotationSpec::get)
+                                        .toList()
+                                ),
+                            p.getSimpleName().toString(),
+                            p.getModifiers().toArray(Modifier[]::new)
+                        )
+                            .addAnnotations(
+                                p.getAnnotationMirrors()
+                                    .stream()
+                                    .map(AnnotationSpec::get)
+                                    .toList()
+                            )
+                            .build()
+                    )
                     .stream()
                     .toList()
             )
@@ -289,7 +309,7 @@ public class Crafter extends AbstractProcessor {
                         } else {
                             return ParameterizedTypeName.get(
                                 stageClassName,
-                                creatorTypeParameterList.toArray(new TypeVariableName[0])
+                                creatorTypeParameterList.toArray(TypeVariableName[]::new)
                             );
                         }
 
@@ -394,10 +414,12 @@ public class Crafter extends AbstractProcessor {
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
             .addTypeVariables(builderTypeParameterList)
             .returns(
-                ParameterizedTypeName.get(
-                    builderClassName,
-                    builderTypeParameterList.toArray(new TypeVariableName[0])
-                )
+                builderTypeParameterList.isEmpty()
+                    ? builderClassName
+                    : ParameterizedTypeName.get(
+                        builderClassName,
+                        builderTypeParameterList.toArray(TypeVariableName[]::new)
+                    )
             )
             .addStatement("return new $T()", builderClassName)
             .build();

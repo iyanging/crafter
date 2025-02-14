@@ -129,7 +129,7 @@ public class CodeStructureAssertion {
         assertArrayEquals(
             expectedType.getFields().toArray(),
             actualType.getFields().toArray(),
-            "Type permits of %s mismatch".formatted(expectedTypeName)
+            "Type field of %s mismatch".formatted(expectedTypeName)
         );
 
         final var expectedInnerTypes = expectedType

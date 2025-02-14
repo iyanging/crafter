@@ -1,5 +1,10 @@
 package io.github.iyanging.crafter;
 
+import java.util.List;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+
 import org.junit.jupiter.api.Test;
 
 
@@ -36,7 +41,7 @@ public class IntegrationTest {
     // return additionalInformation;
     // }
     // }
-    //
+
     // @Builder
     // public record Employee(
     // @NotEmpty(message = "name cannot be null or empty") String name,
@@ -44,10 +49,10 @@ public class IntegrationTest {
     // Map.@Nullable Entry<String, String> additionalInformation
     // ) {}
 
-    // @Builder
-    // public record Group <T>(
-    // @NotNull List<@Valid T> members
-    // ) {}
+    @Builder
+    public record Group <T>(
+        @NotNull List<@Valid T> members
+    ) {}
 
     @Test
     public void integration_test() {

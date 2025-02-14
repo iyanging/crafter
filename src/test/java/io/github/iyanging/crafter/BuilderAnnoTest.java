@@ -15,7 +15,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 @ExtendWith(JavacExtension.class)
 @Processors({ Crafter.class })
-public class CreatorTest {
+public class BuilderAnnoTest {
     @Test
     @Inline(
         name = "Entity",
