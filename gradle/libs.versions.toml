@@ -6,7 +6,7 @@ licenserPlugin = "2.1.1"
 ktfmtPlugin = "0.54"
 
 errorProne = "2.36.0"
-nullaway = "0.12.3"
+nullaway = "0.12.5"
 
 jspecify = "1.0.0"
 javapoet = "0.6.0"
