@@ -14,7 +14,7 @@ javapoet = "0.6.0"
 junit = "5.12.2"
 assertj = "3.27.3"
 elementary = "3.0.0"
-javaparser = "3.26.3"
+javaparser = "3.26.4"
 guava = "33.4.8-jre"
 jakartaValidationApi = "3.1.1"
 
