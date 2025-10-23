@@ -9,6 +9,8 @@ multi-ecosystem-groups:
   python:
     schedule:
       interval: "daily"
+    commit-message:
+      prefix: "build"
 
 updates:
   - package-ecosystem: "gradle"
@@ -21,11 +23,9 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     multi-ecosystem-group: python
-    commit-message:
-      prefix: "build"
+    patterns: [ "*" ]
 
   - package-ecosystem: "uv"
     directory: "/"
     multi-ecosystem-group: python
-    commit-message:
-      prefix: "build"
+    patterns: [ "*" ]
