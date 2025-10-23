@@ -21,7 +21,7 @@ repositories { mavenCentral() }
 group = "io.github.iyanging.crafter"
 
 java {
-    toolchain { languageVersion = JavaLanguageVersion.of(17) }
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
 
     withSourcesJar()
     withJavadocJar()

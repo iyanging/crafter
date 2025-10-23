@@ -10,6 +10,9 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        version: [ 21, 25 ]
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -18,7 +21,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: ${{ matrix.version }}
           cache: gradle
 
       - name: Setup Gradle
