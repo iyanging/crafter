@@ -4,10 +4,28 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
-updates:
-  - package-ecosystem: "gradle" # See documentation for possible values
-    directory: "/" # Location of package manifests
+
+multi-ecosystem-groups:
+  python:
     schedule:
       interval: "daily"
+
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    multi-ecosystem-group: python
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "uv"
+    directory: "/"
+    multi-ecosystem-group: python
     commit-message:
       prefix: "build"
