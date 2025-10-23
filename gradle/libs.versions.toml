@@ -3,7 +3,6 @@ errorPronePlugin = "4.3.0"
 nullawayPlugin = "2.3.0"
 spotlessPlugin = "7.2.1"
 licenserPlugin = "2.1.1"
-ktfmtPlugin = "0.54"
 
 errorProne = "2.41.0"
 nullaway = "0.12.9"
@@ -23,8 +22,6 @@ errorProne = { id = "net.ltgt.errorprone", version.ref = "errorPronePlugin" }
 nullaway = { id = "net.ltgt.nullaway", version.ref = "nullawayPlugin" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotlessPlugin" }
 licenser = { id = "dev.yumi.gradle.licenser", version.ref = "licenserPlugin" }
-# pretend ktfmt as a gradle plugin to let dependabot work on it
-ktfmt = { id = "com.facebook:ktfmt", version.ref = "ktfmtPlugin" }
 
 [libraries]
 errorProneCore = { module = "com.google.errorprone:error_prone_core", version.ref = "errorProne" }
