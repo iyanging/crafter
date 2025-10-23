@@ -15,7 +15,7 @@ junit = "5.13.4"
 assertj = "3.27.4"
 elementary = "3.0.0"
 javaparser = "3.27.0"
-guava = "33.4.8-jre"
+guava = "33.5.0-jre"
 jakartaValidationApi = "3.1.1"
 
 [plugins]
