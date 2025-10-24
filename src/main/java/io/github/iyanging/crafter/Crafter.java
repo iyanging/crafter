@@ -22,6 +22,7 @@ import java.util.stream.Stream;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Generated;
+import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
@@ -33,12 +34,11 @@ import org.jspecify.annotations.Nullable;
 
 
 public class Crafter extends AbstractProcessor {
-    public static final String TOOL_NAME = "Crafter";
-
-    private static final String ANNO_BUILDER_CANONICAL_NAME = Builder.class.getCanonicalName();
 
     @Override
-    public Set<String> getSupportedAnnotationTypes() { return Set.of(ANNO_BUILDER_CANONICAL_NAME); }
+    public Set<String> getSupportedAnnotationTypes() {
+        return Set.of(Builder.class.getCanonicalName());
+    }
 
     @Override
     public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
@@ -49,22 +49,27 @@ public class Crafter extends AbstractProcessor {
         RoundEnvironment roundEnv
     ) {
         for (final var element : roundEnv.getElementsAnnotatedWith(Builder.class)) {
-
             final var elementKind = element.getKind();
-            switch (elementKind) {
 
-                case CLASS, RECORD -> generateBuilderForClass((TypeElement) element);
+            try {
+                switch (elementKind) {
 
-                case CONSTRUCTOR -> generateBuilderForCreator(
-                    (ExecutableElement) element,
-                    makeBuilderContainerName(element)
-                );
+                    case CLASS, RECORD -> generateBuilderForClass((TypeElement) element);
 
-                default -> printError(
-                    element,
-                    "@%s cannot be placed on this position %s"
-                        .formatted(ANNO_BUILDER_CANONICAL_NAME, elementKind.name())
-                );
+                    case CONSTRUCTOR -> generateBuilderForCreator(
+                        (ExecutableElement) element,
+                        makeBuilderContainerName(element)
+                    );
+
+                    default -> throw new UsageViolation(
+                        "@%s cannot be placed on this position %s"
+                            .formatted(Builder.class.getCanonicalName(), elementKind.name()),
+                        element
+                    );
+                }
+
+            } catch (UsageViolation violation) {
+                violation.reportTo(processingEnv);
             }
 
         }
@@ -72,31 +77,8 @@ public class Crafter extends AbstractProcessor {
         return false;
     }
 
-    private void generateBuilderForClass(TypeElement clazz) {
-        final var usableCtorList = clazz.getEnclosedElements()
-            .stream()
-            .filter(e -> e.getKind() == ElementKind.CONSTRUCTOR)
-            .map(ctor -> (ExecutableElement) ctor)
-            .filter(ctor -> ! ctor.getParameters().isEmpty())
-            .toList();
-
-        if (usableCtorList.isEmpty()) {
-            printError(
-                clazz,
-                "Class/Record has no parameterized constructor to be used to generate the Builder"
-            );
-            return;
-
-        } else if (usableCtorList.size() > 1) {
-            printError(
-                clazz,
-                "%s does not know which constructor to be used to generate the Builder"
-                    .formatted(getClass().getName())
-            );
-            return;
-        }
-
-        final var ctor = usableCtorList.get(0);
+    private void generateBuilderForClass(TypeElement clazz) throws UsageViolation {
+        final var ctor = findUsableCtor(clazz);
 
         generateBuilderForCreator(
             ctor,
@@ -107,7 +89,9 @@ public class Crafter extends AbstractProcessor {
     private void generateBuilderForCreator(
         ExecutableElement creator,
         String builderContainerName
-    ) {
+    )
+        throws UsageViolation {
+
         final var creatorTypeParameterList = calcTypeParameters(creator);
 
         // initialize builder container class
@@ -125,22 +109,21 @@ public class Crafter extends AbstractProcessor {
         final var stageInterfaceList = new ArrayList<TypeSpec>();
 
         final var creatorParameterList = creator.getParameters();
-        final var creatorTargetClass = extractTargetClass(creator);
+        final var creatorTargetClass = Util.getReturnType(creator);
         final var creatorTargetClassName = extractClassName(creatorTargetClass);
 
         if (creatorTargetClassName == null) {
-            printError(
-                creator,
+            throw new UsageViolation(
                 "@%s cannot build %s".formatted(
-                    ANNO_BUILDER_CANONICAL_NAME,
+                    Builder.class.getCanonicalName(),
                     Stream.of(creatorTargetClass.getClass().getSimpleName())
                         // remove postfix "Name"
                         .map(n -> n.substring(0, n.length() - 4))
                         .findFirst()
                         .orElseThrow()
-                )
+                ),
+                creator
             );
-            return;
         }
 
         final var finalStage = makeStageInterface(
@@ -157,11 +140,7 @@ public class Crafter extends AbstractProcessor {
             final var creatorParameter = creatorParameterList.get(i);
 
             final var methodName = creatorParameter.getSimpleName().toString();
-            final var stageName = i != 0
-                // add some chars to stage name
-                // to avoid conflict with "FirstStage" / "FinalStage"
-                ? makeUpperCamelCase(methodName) + "_"
-                : "FirstStage";
+            final var stageName = makeUpperCamelCase(methodName);
 
             final var stage = makeStageInterface(
                 stageName,
@@ -190,7 +169,12 @@ public class Crafter extends AbstractProcessor {
         builderContainer.addType(builderClass);
 
         // make `builder()` method
-        final var builderMethod = makeBuilderMethod(builderClass);
+        final var builderMethod = makeBuilderMethod(
+            builderClass,
+            stageInterfaceList.isEmpty()
+                ? builderClass
+                : stageInterfaceList.getFirst()
+        );
 
         builderContainer.addMethod(builderMethod);
 
@@ -254,10 +238,26 @@ public class Crafter extends AbstractProcessor {
         final var stageMethod = MethodSpec.methodBuilder(methodName)
             .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
             .addParameters(
-                Optional.ofNullable(parameter)
-                    .map(ParameterSpec::get)
-                    .stream()
-                    .toList()
+                parameter != null
+                    ? List.of(
+                        // ParameterSpec::get() will not copy parameter annotations
+                        // so we need to build ParameterSpec manually
+                        ParameterSpec
+                            .builder(
+                                TypeName.get(parameter.asType()),
+                                parameter.getSimpleName().toString()
+                            )
+                            .addAnnotations(
+                                parameter.getAnnotationMirrors()
+                                    .stream()
+                                    .map(AnnotationSpec::get)
+                                    .toList()
+                            )
+                            .addModifiers(parameter.getModifiers())
+                            .build()
+                    )
+                    : List.of()
+
             )
             .returns(nextStageTypeName);
 
@@ -307,12 +307,15 @@ public class Crafter extends AbstractProcessor {
                 .map(s -> onlyOne(s.methodSpecs()))
                 .map(m -> onlyOne(m.parameters()))
                 .map(
-                    p -> FieldSpec.builder(
-                        p.type(),
-                        p.name(),
-                        Modifier.PROTECTED
-                    )
-                        .addAnnotations(p.annotations())
+                    p -> FieldSpec
+                        .builder(
+                            p.type(),
+                            p.name(),
+                            Modifier.PROTECTED
+                        )
+                        // ParameterSpec::annotations() will return ElementType.PARAMETER
+                        // which is not proper for class fields
+                        // so we cannot do addAnnotations()
                         .build()
                 )
                 .toList()
@@ -359,7 +362,7 @@ public class Crafter extends AbstractProcessor {
                                 case CONSTRUCTOR -> CodeBlock.builder()
                                     .add(
                                         "return new $T($L)",
-                                        extractTargetClass(creator),
+                                        Util.getReturnType(creator),
                                         creatorInvocationLiteral
                                     )
                                     .build();
@@ -386,33 +389,45 @@ public class Crafter extends AbstractProcessor {
         return builderClass.build();
     }
 
-    private MethodSpec makeBuilderMethod(TypeSpec builderClass) {
+    private MethodSpec makeBuilderMethod(TypeSpec builderClass, TypeSpec firstStageType) {
         final var builderClassName = extractClassName(builderClass);
-        final var builderTypeParameterList = builderClass.typeVariables();
+
+        final var firstStageTypeName = extractClassName(firstStageType);
+        final var firstStageTypeParameterList = firstStageType.typeVariables();
 
         return MethodSpec.methodBuilder("builder")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-            .addTypeVariables(builderTypeParameterList)
+            .addTypeVariables(firstStageTypeParameterList)
             .returns(
-                ParameterizedTypeName.get(
-                    builderClassName,
-                    builderTypeParameterList.toArray(new TypeVariableName[0])
-                )
+                firstStageTypeParameterList.isEmpty()
+                    ? firstStageTypeName
+                    : ParameterizedTypeName.get(
+                        firstStageTypeName,
+                        firstStageTypeParameterList.toArray(new TypeVariableName[0])
+                    )
             )
             .addStatement("return new $T()", builderClassName)
             .build();
     }
 
-    private TypeMirror extractTargetClass(ExecutableElement creator) {
-        return switch (creator.getKind()) {
-            case CONSTRUCTOR -> Objects
-                .requireNonNull(creator.getEnclosingElement())
-                .asType();
+    private ExecutableElement findUsableCtor(TypeElement clazz) throws UsageViolation {
+        final var usableCtorList = Util.getAllConstructors(clazz)
+            .filter(ctor -> ! ctor.getParameters().isEmpty())
+            .limit(2)
+            .toList();
 
-            case METHOD -> creator.getReturnType();
+        return switch (usableCtorList.size()) {
+            case 0 -> throw new UsageViolation(
+                "Class/Record has no parameterized constructor to be used to generate the Builder",
+                clazz
+            );
 
-            default -> throw new IllegalStateException(
-                "creator should be CONSTRUCTOR or static METHOD"
+            case 1 -> usableCtorList.getFirst();
+
+            default -> throw new UsageViolation(
+                "%s does not know which constructor to be used to generate the Builder"
+                    .formatted(getClass().getName()),
+                clazz
             );
         };
     }
@@ -443,7 +458,7 @@ public class Crafter extends AbstractProcessor {
     private Modifier[] calcModifiers(ExecutableElement creator) {
         return new Modifier[] {
             processingEnv.getTypeUtils()
-                .asElement(extractTargetClass(creator))
+                .asElement(Util.getReturnType(creator))
                 .getModifiers()
                 .stream()
                 .filter(
@@ -457,7 +472,7 @@ public class Crafter extends AbstractProcessor {
 
     private List<TypeParameterElement> calcTypeParameters(ExecutableElement creator) {
         final var targetClassElement = (TypeElement) processingEnv.getTypeUtils()
-            .asElement(extractTargetClass(creator));
+            .asElement(Util.getReturnType(creator));
 
         final var targetClassTypeParameterList = targetClassElement.getTypeParameters();
 
@@ -469,7 +484,7 @@ public class Crafter extends AbstractProcessor {
 
     private AnnotationSpec makeGenerated() {
         return AnnotationSpec.builder(Generated.class)
-            .addMember("value", "$S", TOOL_NAME)
+            .addMember("value", "$S", Crafter.class.getCanonicalName())
             .build();
     }
 
@@ -491,16 +506,6 @@ public class Crafter extends AbstractProcessor {
         return baseName + "Builder";
     }
 
-    private void printError(Element element, String message) {
-        processingEnv.getMessager()
-            .printMessage(
-                Diagnostic.Kind.ERROR,
-                message,
-                element,
-                null
-            );
-    }
-
     private static <T> T onlyOne(List<T> list) {
         if (list.size() != 1) {
             throw new IllegalArgumentException(
@@ -508,11 +513,33 @@ public class Crafter extends AbstractProcessor {
             );
         }
 
-        return list.get(0);
+        return list.getFirst();
     }
 
     private static String makeUpperCamelCase(String lowerCamelCase) {
         return lowerCamelCase.substring(0, 1).toUpperCase(Locale.ENGLISH)
             + lowerCamelCase.substring(1);
+    }
+
+    public static class UsageViolation extends Exception {
+        private final String errorMessage;
+        private final Element element;
+
+        public UsageViolation(String errorMessage, Element element) {
+            super(errorMessage);
+
+            this.errorMessage = errorMessage;
+            this.element = element;
+        }
+
+        public void reportTo(ProcessingEnvironment processingEnv) {
+            processingEnv.getMessager()
+                .printMessage(
+                    Diagnostic.Kind.ERROR,
+                    errorMessage,
+                    element,
+                    null
+                );
+        }
     }
 }
