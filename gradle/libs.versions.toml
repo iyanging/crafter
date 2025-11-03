@@ -10,7 +10,7 @@ nullaway = "0.12.10"
 jspecify = "1.0.0"
 javapoet = "0.7.0"
 
-junit = "6.0.0"
+junit = "6.0.1"
 assertj = "3.27.6"
 elementary = "3.0.0"
 javaparser = "3.27.1"
