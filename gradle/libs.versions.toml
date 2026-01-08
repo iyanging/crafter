@@ -4,7 +4,7 @@ nullawayPlugin = "2.3.0"
 spotlessPlugin = "8.1.0"
 licenserPlugin = "2.2.1"
 
-errorProne = "2.44.0"
+errorProne = "2.45.0"
 nullaway = "0.12.14"
 
 jspecify = "1.0.0"
