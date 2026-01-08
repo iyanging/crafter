@@ -5,7 +5,7 @@ spotlessPlugin = "8.1.0"
 licenserPlugin = "2.2.1"
 
 errorProne = "2.45.0"
-nullaway = "0.12.14"
+nullaway = "0.12.15"
 
 jspecify = "1.0.0"
 javapoet = "0.8.0"
