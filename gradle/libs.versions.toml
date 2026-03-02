@@ -1,5 +1,5 @@
 [versions]
-errorPronePlugin = "5.0.0"
+errorPronePlugin = "5.1.0"
 nullawayPlugin = "3.0.0"
 spotlessPlugin = "8.2.1"
 licenserPlugin = "2.2.2"
