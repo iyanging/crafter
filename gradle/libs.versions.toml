@@ -8,7 +8,7 @@ errorProne = "2.48.0"
 nullaway = "0.13.1"
 
 jspecify = "1.0.0"
-javapoet = "0.11.0"
+javapoet = "0.12.0"
 
 junit = "6.0.3"
 assertj = "3.27.7"
