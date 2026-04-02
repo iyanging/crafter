@@ -19,11 +19,27 @@ import java.lang.annotation.*;
 
 
 @Documented
-@Target(
-    {
-        ElementType.TYPE,
-        ElementType.CONSTRUCTOR
-    }
-)
+@Target({ ElementType.TYPE, ElementType.CONSTRUCTOR })
 @Retention(RetentionPolicy.SOURCE)
-public @interface Builder {}
+public @interface Builder {
+    Style style() default Style.EXPLICIT_NULL;
+
+    String packageName() default "";
+
+    Class<?> packageClass() default Void.class;
+
+    String name() default "%sBuilder";
+
+    Access access() default Access.SAME_AS_CREATOR;
+
+    enum Style {
+        EXPLICIT_NULL,
+        IMPLICIT_NULL,
+    }
+
+    enum Access {
+        SAME_AS_CREATOR,
+        PUBLIC,
+        PACKAGE,
+    }
+}

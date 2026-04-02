@@ -5,6 +5,7 @@
 .idea/*
 !.idea/eclipseCodeFormatter.xml
 !.idea/ktfmt.xml
+!.idea/externalDependencies.xml
 
 # User-specific stuff
 .idea/**/workspace.xml

@@ -22,23 +22,25 @@ import java.util.stream.Stream;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Generated;
+import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
+import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeMirror;
 import javax.tools.Diagnostic;
 
 import com.palantir.javapoet.*;
+import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
 
 public class Crafter extends AbstractProcessor {
-    public static final String TOOL_NAME = "Crafter";
-
-    private static final String ANNO_BUILDER_CANONICAL_NAME = Builder.class.getCanonicalName();
 
     @Override
-    public Set<String> getSupportedAnnotationTypes() { return Set.of(ANNO_BUILDER_CANONICAL_NAME); }
+    public Set<String> getSupportedAnnotationTypes() {
+        return Set.of(Builder.class.getCanonicalName());
+    }
 
     @Override
     public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
@@ -49,22 +51,31 @@ public class Crafter extends AbstractProcessor {
         RoundEnvironment roundEnv
     ) {
         for (final var element : roundEnv.getElementsAnnotatedWith(Builder.class)) {
-
             final var elementKind = element.getKind();
-            switch (elementKind) {
+            final var builderConfig = Objects.requireNonNull(element.getAnnotation(Builder.class));
 
-                case CLASS, RECORD -> generateBuilderForClass((TypeElement) element);
+            try {
+                switch (elementKind) {
 
-                case CONSTRUCTOR -> generateBuilderForCreator(
-                    (ExecutableElement) element,
-                    makeBuilderContainerName(element)
-                );
+                    case CLASS, RECORD -> generateBuilderForCreator(
+                        builderConfig,
+                        findUsableCreator((TypeElement) element)
+                    );
 
-                default -> printError(
-                    element,
-                    "@%s cannot be placed on this position %s"
-                        .formatted(ANNO_BUILDER_CANONICAL_NAME, elementKind.name())
-                );
+                    case CONSTRUCTOR -> generateBuilderForCreator(
+                        builderConfig,
+                        findUsableCreator((ExecutableElement) element)
+                    );
+
+                    default -> throw new UsageViolation(
+                        "@%s cannot be placed on this position %s"
+                            .formatted(Builder.class.getCanonicalName(), elementKind.name()),
+                        element
+                    );
+                }
+
+            } catch (UsageViolation violation) {
+                violation.reportTo(processingEnv);
             }
 
         }
@@ -72,192 +83,152 @@ public class Crafter extends AbstractProcessor {
         return false;
     }
 
-    private void generateBuilderForClass(TypeElement clazz) {
-        final var usableCtorList = clazz.getEnclosedElements()
-            .stream()
-            .filter(e -> e.getKind() == ElementKind.CONSTRUCTOR)
-            .map(ctor -> (ExecutableElement) ctor)
-            .filter(ctor -> ! ctor.getParameters().isEmpty())
-            .toList();
+    private void generateBuilderForCreator(
+        Builder builderConfig,
+        ExecutableElement creator
+    )
+        throws UsageViolation {
 
-        if (usableCtorList.isEmpty()) {
-            printError(
-                clazz,
-                "Class/Record has no parameterized constructor to be used to generate the Builder"
-            );
-            return;
+        final var containerClass = makeContainerClass(builderConfig, creator);
 
-        } else if (usableCtorList.size() > 1) {
-            printError(
-                clazz,
-                "%s does not know which constructor to be used to generate the Builder"
-                    .formatted(getClass().getName())
-            );
-            return;
-        }
+        final var stageList = makeAllStages(creator);
 
-        final var ctor = usableCtorList.get(0);
+        containerClass.addTypes(stageList);
 
-        generateBuilderForCreator(
-            ctor,
-            makeBuilderContainerName(clazz)
+        final var builderClass = makeBuilderClass(stageList, creator);
+
+        containerClass.addType(builderClass);
+
+        final var builderMethod = makeBuilderMethod(
+            builderClass,
+            stageList.getFirst()
         );
+
+        containerClass.addMethod(builderMethod);
+
+        final var targetPackage = calcTargetPackage(builderConfig, creator);
+
+        dumpContainerClass(containerClass, targetPackage);
     }
 
-    private void generateBuilderForCreator(
-        ExecutableElement creator,
-        String builderContainerName
+    private TypeSpec.Builder makeContainerClass(
+        Builder builderConfig,
+        ExecutableElement creator
     ) {
-        final var creatorTypeParameterList = calcTypeParameters(creator);
-
-        // initialize builder container class
-        final var builderContainer = TypeSpec.classBuilder(builderContainerName)
+        return TypeSpec.classBuilder(makeBuilderContainerName(creator))
             .addAnnotation(makeGenerated())
-            .addModifiers(calcModifiers(creator))
+            .addModifiers(calcContainerModifier(builderConfig, creator))
             .addMethod(
                 // make constructor private to prevent instantiation of container
                 MethodSpec.constructorBuilder()
                     .addModifiers(Modifier.PRIVATE)
                     .build()
             );
+    }
 
-        // reversely make stages interfaces
-        final var stageInterfaceList = new ArrayList<TypeSpec>();
+    private List<TypeSpec> makeAllStages(ExecutableElement creator)
+        throws UsageViolation {
+        // Reversely make stages interfaces:
+        // Stages are referenced in parameter declaration order,
+        // but must be declared in reverse to maintain proper scoping.
 
-        final var creatorParameterList = creator.getParameters();
-        final var creatorTargetClass = extractTargetClass(creator);
+        final var stageList = new ArrayList<TypeSpec>();
+
+        final var creatorParamList = creator.getParameters();
+        final var creatorTargetClass = getReturnType(creator);
         final var creatorTargetClassName = extractClassName(creatorTargetClass);
+        final var creatorTypeParamList = calcTypeParameters(creator);
 
         if (creatorTargetClassName == null) {
-            printError(
-                creator,
-                "@%s cannot build %s".formatted(
-                    ANNO_BUILDER_CANONICAL_NAME,
-                    Stream.of(creatorTargetClass.getClass().getSimpleName())
-                        // remove postfix "Name"
-                        .map(n -> n.substring(0, n.length() - 4))
-                        .findFirst()
-                        .orElseThrow()
-                )
+            throw new UsageViolation(
+                "creator cannot return %s".formatted(
+                    creatorTargetClass.getClass().getSimpleName()
+                ),
+                creator
             );
-            return;
         }
 
-        final var finalStage = makeStageInterface(
-            "FinalStage",
-            creatorTypeParameterList,
+        final var buildStage = makeStageInterface(
+            "Build$",
+            creatorTypeParamList,
             "build",
             null,
             creatorTargetClassName
         );
-        stageInterfaceList.add(finalStage);
 
-        var nextStage = finalStage;
-        for (var i = creatorParameterList.size() - 1; i >= 0; i--) {
-            final var creatorParameter = creatorParameterList.get(i);
+        stageList.add(buildStage);
+        var nextStage = buildStage;
 
-            final var methodName = creatorParameter.getSimpleName().toString();
-            final var stageName = i != 0
-                // add some chars to stage name
-                // to avoid conflict with "FirstStage" / "FinalStage"
-                ? makeUpperCamelCase(methodName) + "_"
-                : "FirstStage";
-
+        for (final var creatorParam : creatorParamList.reversed()) {
+            final var methodName = creatorParam.getSimpleName().toString();
+            final var stageName = makeUpperCamelCase(methodName);
             final var stage = makeStageInterface(
                 stageName,
-                creatorTypeParameterList,
-                creatorParameter.getSimpleName().toString(),
-                creatorParameter,
+                creatorTypeParamList,
+                methodName,
+                creatorParam,
                 nextStage
             );
 
-            stageInterfaceList.add(stage);
+            stageList.add(stage);
             nextStage = stage;
         }
 
-        Collections.reverse(stageInterfaceList); // reverse the reversed list
-
-        // add stages interfaces
-        builderContainer.addTypes(stageInterfaceList);
-
-        // make builder class
-        final var builderClass = makeBuilderClass(
-            stageInterfaceList,
-            finalStage,
-            creator
-        );
-
-        builderContainer.addType(builderClass);
-
-        // make `builder()` method
-        final var builderMethod = makeBuilderMethod(builderClass);
-
-        builderContainer.addMethod(builderMethod);
-
-        final var builderFile = JavaFile.builder(
-            processingEnv.getElementUtils()
-                .getPackageOf(creator)
-                .getQualifiedName()
-                .toString(),
-            builderContainer.build()
-        ).build();
-
-        try {
-            builderFile.writeTo(processingEnv.getFiler());
-
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-
+        // Java supports forward references,
+        // so we will reverse the "reversed" stage declarations
+        // to match the parameter declaration order
+        return stageList.reversed();
     }
 
     private TypeSpec makeStageInterface(
-        String interfaceName,
-        List<TypeParameterElement> typeParameter,
+        String stageName,
+        List<TypeParameterElement> typeParamDeclList,
         String methodName,
-        @Nullable VariableElement parameter,
+        @Nullable VariableElement param,
         TypeSpec nextStage
     ) {
         return makeStageInterface(
-            interfaceName,
-            typeParameter,
+            stageName,
+            typeParamDeclList,
             methodName,
-            parameter,
+            param,
             extractClassName(nextStage)
         );
     }
 
-    private TypeSpec makeStageInterface(
-        String interfaceName,
-        List<TypeParameterElement> typeParameterList,
+    private static TypeSpec makeStageInterface(
+        String stageName,
+        List<TypeParameterElement> typeParamDeclList,
         String methodName,
-        @Nullable VariableElement parameter,
+        @Nullable VariableElement param,
         ClassName nextStage
     ) {
-        final var typeParameterNameList = typeParameterList.stream()
-            .map(TypeVariableName::get)
-            .toList();
-
-        final var stageInterface = TypeSpec.interfaceBuilder(interfaceName)
+        final var stageInterface = TypeSpec.interfaceBuilder(stageName)
             .addModifiers(Modifier.PUBLIC)
-            .addTypeVariables(typeParameterNameList);
+            .addTypeVariables(
+                typeParamDeclList.stream()
+                    .map(Gen::asTypeVariableName)
+                    .toList()
+            );
 
-        final var nextStageTypeName = typeParameterList.isEmpty()
+        Gen.toT
+
+        final var nextStageTypeName = typeParamDeclList.isEmpty()
             ? nextStage
             : ParameterizedTypeName
                 .get(
                     nextStage,
-                    // all stages share the same ordered type parameters
-                    typeParameterNameList.toArray(new TypeVariableName[0])
+                    typeParamDeclList.stream()
+                        .map(Gen::toTypeName)
+                        .toArray(TypeName[]::new)
                 );
 
         final var stageMethod = MethodSpec.methodBuilder(methodName)
             .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
             .addParameters(
-                Optional.ofNullable(parameter)
-                    .map(ParameterSpec::get)
-                    .stream()
-                    .toList()
+                param != null
+                    ? List.of(Gen.toParamSpec(param))
+                    : List.of()
             )
             .returns(nextStageTypeName);
 
@@ -267,63 +238,65 @@ public class Crafter extends AbstractProcessor {
     }
 
     private TypeSpec makeBuilderClass(
-        List<TypeSpec> stageInterfaceList,
-        TypeSpec finalStage,
+        List<TypeSpec> stageList,
         ExecutableElement creator
     ) {
-        final var creatorTypeParameterList = calcTypeParameters(creator).stream()
-            .map(TypeVariableName::get)
+        final var typeParamDeclList = creator.getTypeParameters()
+            .stream()
+            .map(Gen::asTypeVariableName)
             .toList();
 
         final var builderClass = TypeSpec.classBuilder("Builder")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-            .addTypeVariables(creatorTypeParameterList)
+            .addTypeVariables(typeParamDeclList)
             .addSuperinterfaces(
-                stageInterfaceList.stream()
-                    .map(stageInterface -> {
-                        final var stageClassName = extractClassName(stageInterface);
+                stageList.stream()
+                    .map(stage -> {
+                        final var stageClassName = extractClassName(stage);
 
-                        if (creatorTypeParameterList.isEmpty()) {
-                            return stageClassName;
-
-                        } else {
-                            return ParameterizedTypeName.get(
+                        return typeParamDeclList.isEmpty()
+                            ? stageClassName
+                            : ParameterizedTypeName.get(
                                 stageClassName,
-                                creatorTypeParameterList.toArray(new TypeVariableName[0])
+                                creator.getTypeParameters()
+                                    .stream()
+                                    .map(Gen::toTypeName)
+                                    .toArray(TypeName[]::new)
                             );
-                        }
 
                     })
                     .toList()
             );
 
         builderClass.addFields(
-            stageInterfaceList.stream()
+            stageList.stream()
                 .filter(s -> {
                     @SuppressWarnings("ReferenceEquality")
-                    final var isFinalStage = s != finalStage;
-                    return isFinalStage;
+                    final var isBuildStage = s != stageList.getLast();
+                    return isBuildStage;
                 })
                 .map(s -> onlyOne(s.methodSpecs()))
                 .map(m -> onlyOne(m.parameters()))
                 .map(
-                    p -> FieldSpec.builder(
-                        p.type(),
-                        p.name(),
-                        Modifier.PROTECTED
-                    )
-                        .addAnnotations(p.annotations())
+                    p -> FieldSpec
+                        .builder(
+                            p.type(), // TYPE_USE annotations are already included in the type
+                            p.name(),
+                            Modifier.PROTECTED
+                        )
+                        // Note: PARAMETER annotations from the method parameter are not
+                        // copied to the field, which is correct behavior
                         .build()
                 )
                 .toList()
         );
 
         builderClass.addMethods(
-            stageInterfaceList.stream()
+            stageList.stream()
                 .filter(s -> {
                     @SuppressWarnings("ReferenceEquality")
-                    final var isFinalStage = s != finalStage;
-                    return isFinalStage;
+                    final var isBuildStage = s != stageList.getLast();
+                    return isBuildStage;
                 })
                 .map(s -> onlyOne(s.methodSpecs()))
                 .map(
@@ -348,7 +321,7 @@ public class Crafter extends AbstractProcessor {
         );
 
         builderClass.addMethods(
-            Stream.of(onlyOne(finalStage.methodSpecs()))
+            Stream.of(onlyOne(stageList.getLast().methodSpecs()))
                 .map(
                     buildMethod -> MethodSpec.methodBuilder(buildMethod.name())
                         .addAnnotation(Override.class)
@@ -359,7 +332,7 @@ public class Crafter extends AbstractProcessor {
                                 case CONSTRUCTOR -> CodeBlock.builder()
                                     .add(
                                         "return new $T($L)",
-                                        extractTargetClass(creator),
+                                        getReturnType(creator),
                                         creatorInvocationLiteral
                                     )
                                     .build();
@@ -386,45 +359,82 @@ public class Crafter extends AbstractProcessor {
         return builderClass.build();
     }
 
-    private MethodSpec makeBuilderMethod(TypeSpec builderClass) {
+    private MethodSpec makeBuilderMethod(
+        TypeSpec builderClass,
+        TypeSpec firstStageType
+    ) {
         final var builderClassName = extractClassName(builderClass);
-        final var builderTypeParameterList = builderClass.typeVariables();
+        final var firstStageTypeName = extractClassName(firstStageType);
 
         return MethodSpec.methodBuilder("builder")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-            .addTypeVariables(builderTypeParameterList)
+            .addTypeVariables(firstStageType.typeVariables())
             .returns(
-                ParameterizedTypeName.get(
-                    builderClassName,
-                    builderTypeParameterList.toArray(new TypeVariableName[0])
-                )
+                firstStageType.typeVariables().isEmpty()
+                    ? firstStageTypeName
+                    : ParameterizedTypeName.get(
+                        firstStageTypeName,
+                        firstStageType.typeVariables().toArray(new TypeVariableName[0])
+                    )
             )
-            .addStatement("return new $T()", builderClassName)
+            .addStatement(
+                firstStageType.typeVariables().isEmpty()
+                    ? "return new $T()"
+                    : "return new $T<>()",
+                builderClassName
+            )
             .build();
     }
 
-    private TypeMirror extractTargetClass(ExecutableElement creator) {
-        return switch (creator.getKind()) {
-            case CONSTRUCTOR -> Objects
-                .requireNonNull(creator.getEnclosingElement())
-                .asType();
+    private ExecutableElement findUsableCreator(TypeElement clazz) throws UsageViolation {
+        final var parameterizedCtorList = clazz.getEnclosedElements()
+            .stream()
+            .filter(e -> e.getKind() == ElementKind.CONSTRUCTOR)
+            .map(ctor -> (ExecutableElement) ctor)
+            .filter(ctor -> ! ctor.getParameters().isEmpty())
+            .limit(2)
+            .toList();
 
-            case METHOD -> creator.getReturnType();
+        return switch (parameterizedCtorList.size()) {
+            case 0 -> throw new UsageViolation(
+                "Class/Record has no parameterized constructor to be used to generate the Builder",
+                clazz
+            );
 
-            default -> throw new IllegalStateException(
-                "creator should be CONSTRUCTOR or static METHOD"
+            case 1 -> findUsableCreator(parameterizedCtorList.getFirst());
+
+            default -> throw new UsageViolation(
+                "%s does not know which constructor to be used to generate the Builder"
+                    .formatted(getClass().getName()),
+                clazz
             );
         };
     }
 
-    private ClassName extractClassName(TypeSpec type) {
+    private ExecutableElement findUsableCreator(ExecutableElement creator) throws UsageViolation {
+        if (
+            creator.getModifiers().isEmpty() // package-private access
+                || creator.getModifiers().contains(Modifier.PUBLIC)
+        ) {
+            return creator;
+
+        } else {
+            throw new UsageViolation(
+                "Only public and package-private constructors are supported for Builder generation",
+                creator
+            );
+        }
+
+    }
+
+    private static ClassName extractClassName(TypeSpec type) {
         return ClassName.get(
             "", // directly access
             type.name()
         );
     }
 
-    private @Nullable ClassName extractClassName(TypeMirror typeMirror) {
+    private static @Nullable ClassName extractClassName(TypeMirror typeMirror) {
         final var typeName = TypeName.get(typeMirror);
 
         if (typeName instanceof ClassName cn) {
@@ -440,24 +450,9 @@ public class Crafter extends AbstractProcessor {
 
     }
 
-    private Modifier[] calcModifiers(ExecutableElement creator) {
-        return new Modifier[] {
-            processingEnv.getTypeUtils()
-                .asElement(extractTargetClass(creator))
-                .getModifiers()
-                .stream()
-                .filter(
-                    modifier -> modifier == Modifier.PUBLIC
-                        || modifier == Modifier.PROTECTED
-                        || modifier == Modifier.PRIVATE
-                )
-                .findFirst()
-                .orElse(Modifier.DEFAULT) };
-    }
-
     private List<TypeParameterElement> calcTypeParameters(ExecutableElement creator) {
         final var targetClassElement = (TypeElement) processingEnv.getTypeUtils()
-            .asElement(extractTargetClass(creator));
+            .asElement(getReturnType(creator));
 
         final var targetClassTypeParameterList = targetClassElement.getTypeParameters();
 
@@ -469,7 +464,7 @@ public class Crafter extends AbstractProcessor {
 
     private AnnotationSpec makeGenerated() {
         return AnnotationSpec.builder(Generated.class)
-            .addMember("value", "$S", TOOL_NAME)
+            .addMember("value", "$S", Crafter.class.getCanonicalName())
             .build();
     }
 
@@ -491,14 +486,73 @@ public class Crafter extends AbstractProcessor {
         return baseName + "Builder";
     }
 
-    private void printError(Element element, String message) {
-        processingEnv.getMessager()
-            .printMessage(
-                Diagnostic.Kind.ERROR,
-                message,
-                element,
-                null
-            );
+    private void dumpContainerClass(
+        TypeSpec.Builder containerClass,
+        String targetPackage
+    ) {
+        final var builderFile = JavaFile.builder(
+            targetPackage,
+            containerClass.build()
+        ).build();
+
+        try {
+            builderFile.writeTo(processingEnv.getFiler());
+
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+    }
+
+    private String calcTargetPackage(
+        Builder builderConfig,
+        ExecutableElement creator
+    ) {
+        final TypeMirror packageClass;
+        try {
+            final var ignored = builderConfig.packageClass();
+
+            throw new ImpossibleError("Annotation Class<?> field should be inaccessible");
+
+        } catch (MirroredTypeException e) {
+            packageClass = e.getTypeMirror();
+        }
+
+        if (! packageClass.toString().equals(Void.class.getCanonicalName())) {
+            return processingEnv.getElementUtils()
+                .getPackageOf(processingEnv.getTypeUtils().asElement(packageClass))
+                .getQualifiedName()
+                .toString();
+
+        } else if (! builderConfig.packageName().isEmpty()) {
+            return builderConfig.packageName();
+
+        } else {
+            return processingEnv.getElementUtils()
+                .getPackageOf(creator)
+                .getQualifiedName()
+                .toString();
+        }
+
+    }
+
+    private Modifier calcContainerModifier(Builder builderConfig, ExecutableElement creator) {
+        return switch (builderConfig.access()) {
+            case SAME_AS_CREATOR -> processingEnv.getTypeUtils()
+                .asElement(getReturnType(creator))
+                .getModifiers()
+                .stream()
+                .filter(
+                    m -> m == Modifier.PUBLIC
+                        || m == Modifier.PROTECTED
+                        || m == Modifier.PRIVATE
+                )
+                .findFirst()
+                .orElse(Modifier.DEFAULT);
+
+            case PUBLIC -> Modifier.PUBLIC;
+            default -> Modifier.DEFAULT;
+        };
     }
 
     private static <T> T onlyOne(List<T> list) {
@@ -508,11 +562,83 @@ public class Crafter extends AbstractProcessor {
             );
         }
 
-        return list.get(0);
+        return list.getFirst();
     }
 
     private static String makeUpperCamelCase(String lowerCamelCase) {
         return lowerCamelCase.substring(0, 1).toUpperCase(Locale.ENGLISH)
             + lowerCamelCase.substring(1);
+    }
+
+    private static TypeMirror getReturnType(ExecutableElement creator) {
+        return switch (creator.getKind()) {
+            case CONSTRUCTOR -> Objects
+                .requireNonNull(creator.getEnclosingElement())
+                .asType();
+
+            case METHOD -> creator.getReturnType();
+
+            default -> throw new IllegalArgumentException(
+                "creator should be CONSTRUCTOR or static METHOD"
+            );
+        };
+    }
+
+    private record Gen() {
+        public static ParameterSpec toParamSpec(VariableElement variable) {
+            return ParameterSpec
+                .builder(
+                    asTypeName(variable.asType()),
+                    variable.getSimpleName().toString()
+                )
+                .addAnnotations(
+                    variable.getAnnotationMirrors()
+                        .stream()
+                        .map(AnnotationSpec::get)
+                        .toList()
+                )
+                .addModifiers(variable.getModifiers())
+                .build();
+        }
+
+        public static TypeName asTypeName(TypeMirror type) {
+
+        }
+
+        public static TypeName toTypeName(TypeParameterElement typeParam) {
+
+        }
+
+        public static TypeVariableName asTypeVariableName(TypeParameterElement typeParam) {
+
+        }
+    }
+
+    public static class UsageViolation extends Exception {
+        private final String errorMessage;
+        private final Element element;
+
+        public UsageViolation(String errorMessage, Element element) {
+            super(errorMessage);
+
+            this.errorMessage = errorMessage;
+            this.element = element;
+        }
+
+        public void reportTo(ProcessingEnvironment processingEnv) {
+            processingEnv.getMessager()
+                .printMessage(
+                    Diagnostic.Kind.ERROR,
+                    errorMessage,
+                    element,
+                    null
+                );
+        }
+    }
+
+    public static class ImpossibleError extends RuntimeException {
+        public ImpossibleError(String message) {
+            super(message);
+        }
     }
 }

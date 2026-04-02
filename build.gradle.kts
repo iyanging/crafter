@@ -116,7 +116,10 @@ publishing {
     repositories {
         maven {
             name = "MavenCentral"
-            url = URI.create("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
+            url =
+                URI.create(
+                    "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
+                )
 
             credentials {
                 val mavenCentralUsername: String? by project
